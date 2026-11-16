@@ -1,0 +1,44 @@
+%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length 432 >> stream
+BT
+/F1 18 Tf
+50 720 Td
+(Deep Residual Learning and Multi-Head Attention in Modern NLP) Tj
+/F1 12 Tf
+0 -35 Td
+(Abstract: Breakthroughs in Transformer architectures have transformed Natural Language Processing.) Tj
+0 -20 Td
+(In this study, we explore how dense vector embeddings, coupled with Retrieval-Augmented Generation,) Tj
+0 -20 Td
+(empower autonomous agents to conduct literature reviews, evaluate scientific sentiments, and perform) Tj
+0 -20 Td
+(cross-lingual translation.) Tj
+0 -30 Td
+(1. Introduction: Large Language Models often suffer from factual hallucinations and knowledge cutoff.) Tj
+0 -20 Td
+(By combining local vector stores with real-time web verification, hallucination rates drop drastically.) Tj
+0 -30 Td
+(2. Methodology: Passages are partitioned into 300-token chunks with 50-token overlap, then mapped) Tj
+0 -20 Td
+(into 384-dimensional dense vectors using sentence-transformers and indexed in ChromaDB.) Tj
+0 -30 Td
+(3. Conclusion: The agentic workflow demonstrates superior precision in academic question answering.) Tj
+ET
+endstream
+endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000244 00000 n 
+0000000728 00000 n 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+807
+%%EOF
