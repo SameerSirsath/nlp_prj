@@ -6,6 +6,10 @@ Powered by Local Ollama (llama3) & Native Tool Calling
 
 import os
 import re
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 from typing import Optional, List, Dict, Any
 
 from textblob import TextBlob

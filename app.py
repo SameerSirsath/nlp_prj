@@ -8,6 +8,11 @@ Sentiment Analysis (TextBlob), Named Entity Recognition (spaCy), and Multilingua
 
 import os
 import re
+import warnings
+
+# Suppress harmless upstream deprecation notices from ecosystem sunsetting
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
