@@ -103,18 +103,18 @@ ollama --version
 ```
 *(If Ollama is not yet installed, download the installer for your OS from [https://ollama.com/download](https://ollama.com/download) and launch it).*
 
-### 5.2 Pull the `llama3` Model
-Download the official Meta LLaMA 3 model:
+### 5.2 Pull the `llama3.2` Model (Native Tool Calling)
+Meta LLaMA 3.2 is officially configured with native Ollama tool-calling capabilities. Run:
 ```bash
-ollama pull llama3
+ollama pull llama3.2
 ```
 
 ### 5.3 Verify the Local Model Registry
-Verify that `llama3` is ready on your machine:
+Verify that `llama3.2` is ready on your machine:
 ```bash
 ollama list
 ```
-You should see `llama3:latest` listed in the output table.
+You should see `llama3.2:latest` listed in the output table.
 
 ---
 

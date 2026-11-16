@@ -1,7 +1,7 @@
 """
 Streamlit Web Application: Agentic RAG-Based AI Research Assistant
 Capstone Project - Natural Language Processing
-Powered by Local Ollama (llama3) & Native LangChain Tool Calling
+Powered by Local Ollama (llama3.2) & Native LangChain Tool Calling
 Features: Native Tool Calling, Topic Modeling (BERTopic), RAG Retriever (k=4),
 Sentiment Analysis (TextBlob), Named Entity Recognition (spaCy), and Multilingual Translation.
 """
@@ -10,7 +10,7 @@ import os
 import re
 import warnings
 
-# Suppress harmless upstream deprecation notices from ecosystem sunsetting
+# Suppress harmless upstream deprecation notices
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import streamlit as st
@@ -24,7 +24,6 @@ from bertopic import BERTopic
 # LangChain, Chroma & Local Ollama Native Tool Calling
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Graceful import for Embeddings
 try:
     from langchain_huggingface import HuggingFaceEmbeddings
 except ImportError:
@@ -53,7 +52,7 @@ st.set_page_config(
 st.title("🔬 Agentic RAG-Based AI Research Assistant")
 st.markdown(
     "**A College Capstone NLP Project** featuring **Native Tool Calling**, "
-    "**RAG (k=4)**, **BERTopic Topic Modeling**, **ChromaDB**, and **Local LLM (Ollama - LLaMA 3)**."
+    "**RAG (k=4)**, **BERTopic Topic Modeling**, **ChromaDB**, and **Local LLM (Ollama - LLaMA 3.2)**."
 )
 
 st.markdown("""
@@ -83,6 +82,26 @@ def load_spacy_model():
         return spacy.load("en_core_web_sm")
 
 nlp = load_spacy_model()
+
+
+# Helper to auto-select the tool-capable Ollama model
+def get_tool_supporting_model() -> str:
+    """
+    Returns an Ollama model that supports native function/tool calling.
+    Meta added native tools in LLaMA 3.2 and 3.1. Legacy LLaMA 3 does not support tools.
+    """
+    try:
+        import json, urllib.request
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as resp:
+            models = [m.get("name", "") for m in json.loads(resp.read().decode()).get("models", [])]
+            for m in models:
+                if "llama3.2" in m:
+                    return "llama3.2"
+                if "llama3.1" in m:
+                    return "llama3.1"
+    except Exception:
+        pass
+    return "llama3.2"
 
 
 # 3. Document Extraction & Preprocessing (CO1 - Practical 1)
@@ -123,25 +142,21 @@ def build_agent_tools(vectorstore):
     4. Info_Extraction: spaCy token-level Named Entity Recognition.
     5. Translate: deep-translator multilingual engine.
     """
-    # Requirement 3: Fetch top 4 chunks (k=4)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
     def run_doc_search(query: str) -> str:
         clean_q = query.strip().strip('"').strip("'")
         docs = retriever.invoke(clean_q)
         if not docs:
-            # Requirement 3: Explicit fallback string
             return "No directly matching excerpt found in the document."
         return "\n\n".join([f"[Excerpt {i+1}]: {d.page_content}" for i, d in enumerate(docs)])
 
     def run_topic_modeling(text: str) -> str:
-        # Requirement 2: Topic Modeling using BERTopic on sentences
         try:
-            # If input is very short, pull context from vectorstore if available
             clean_text = text.strip()
             sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+|\n+', clean_text) if len(s.strip()) > 15]
             
-            # If the user passed a query rather than text, retrieve top document passages
+            # If the input is brief or a query, pull document passages
             if len(sentences) < 3:
                 sample_docs = retriever.invoke("main research topics, methodology, and conclusion")
                 if sample_docs:
@@ -159,7 +174,6 @@ def build_agent_tools(vectorstore):
             topics, _ = topic_model.fit_transform(sentences)
             topic_info = topic_model.get_topic_info()
 
-            # Return top 5 topic names
             top_topics = []
             for _, row in topic_info.head(5).iterrows():
                 name = row.get("Name", f"Topic {row['Topic']}")
@@ -215,21 +229,21 @@ def build_agent_tools(vectorstore):
     ]
 
 
-def create_agent(vectorstore) -> AgentExecutor:
+def create_agent(vectorstore, model_name: str = None) -> AgentExecutor:
     """
-    Creates and returns a Native Tool Calling AgentExecutor powered by local Ollama (llama3).
-    Includes safety limits: max_iterations=4, max_execution_time=60, early_stopping_method='generate'.
+    Creates and returns a Native Tool Calling AgentExecutor.
+    Uses llama3.2 (which natively supports Ollama tool calling with zero 400 errors).
     """
-    # Requirement 1 & 5: Local Ollama LLM with temperature=0
+    if model_name is None:
+        model_name = get_tool_supporting_model()
+
     llm = ChatOllama(
-        model="llama3",
+        model=model_name,
         temperature=0.0
     )
 
-    # Build Tools (including Topic_Modeling & Document_Search with k=4)
     tools = build_agent_tools(vectorstore)
 
-    # Requirement 1: Native Tool Calling ChatPromptTemplate
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
@@ -246,10 +260,8 @@ def create_agent(vectorstore) -> AgentExecutor:
         ("placeholder", "{agent_scratchpad}")
     ])
 
-    # Requirement 1: Native Tool Calling Agent
     agent = create_tool_calling_agent(llm=llm, tools=tools, prompt=prompt)
 
-    # Requirement 4: AgentExecutor with safety limits
     return AgentExecutor(
         agent=agent,
         tools=tools,
@@ -272,7 +284,7 @@ if "messages" not in st.session_state:
             "role": "assistant",
             "content": (
                 "👋 **Welcome to your Agentic RAG AI Research Assistant!**\n\n"
-                "• **Local LLM:** Ollama (`llama3`) via **Native Tool Calling** (JSON Schema)\n"
+                "• **Local LLM:** Ollama (`llama3.2`) via **Native Tool Calling** (JSON Schema)\n"
                 "• **Capabilities:** RAG Document Retrieval (k=4), BERTopic Topic Modeling, Sentiment Analysis, Named Entity Recognition, Translation.\n\n"
                 "Please upload a research paper (PDF) from the left sidebar to activate the agent."
             ),
@@ -293,7 +305,8 @@ if "processed_file" not in st.session_state:
 # 6. Sidebar Controls & Demonstration Options
 with st.sidebar:
     st.header("⚙️ Project Controls")
-    st.markdown('<span class="metric-badge">LOCAL LLM: llama3</span><span class="metric-badge">TOOL CALLING</span>', unsafe_allow_html=True)
+    active_model = get_tool_supporting_model()
+    st.markdown(f'<span class="metric-badge">LOCAL LLM: {active_model}</span><span class="metric-badge">NATIVE TOOLS</span>', unsafe_allow_html=True)
     st.caption("College Capstone NLP Project • Group of 2 Students")
 
     st.markdown("---")
@@ -315,16 +328,16 @@ with st.sidebar:
                     else:
                         vectorstore = create_vectorstore_from_text(raw_text)
                         st.session_state.vectorstore = vectorstore
-                        st.session_state.agent = create_agent(vectorstore)
+                        st.session_state.agent = create_agent(vectorstore, model_name=active_model)
                         st.session_state.processed_file = uploaded_pdf.name
                         
                         st.success(f"Successfully indexed: `{uploaded_pdf.name}`")
-                        st.info("Native Tool Calling Agent initialized with `llama3` & ChromaDB (k=4)!")
+                        st.info(f"Native Tool Calling Agent initialized with `{active_model}` & ChromaDB (k=4)!")
                 except Exception as e:
                     st.error(f"Error during document processing: {str(e)}")
         else:
             st.success(f"Active Paper: `{uploaded_pdf.name}`")
-            st.caption("Agent is online and ready for queries.")
+            st.caption(f"Agent ({active_model}) is online and ready for queries.")
 
     st.markdown("---")
     st.subheader("🔍 2. Evaluator Demonstration")
@@ -381,13 +394,12 @@ if user_query:
             st.warning(warning_text)
             st.session_state.messages.append({"role": "assistant", "content": warning_text, "thoughts": None})
         else:
-            with st.spinner("🤖 Ollama Agent (llama3) is executing native tool calling..."):
+            with st.spinner(f"🤖 Ollama Agent ({active_model}) is executing native tool calling..."):
                 try:
                     response = st.session_state.agent.invoke({"input": user_query})
                     output_text = response.get("output", "")
                     intermediate_steps = response.get("intermediate_steps", [])
                     
-                    # Graceful synthesis if early stopping triggered
                     if not output_text or "Agent stopped due to iteration limit" in output_text:
                         if intermediate_steps:
                             last_obs = intermediate_steps[-1][1]
