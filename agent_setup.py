@@ -1,242 +1,168 @@
 """
-Agentic Workflow & ReAct Agent Setup
+Agentic Workflow & Native Tool Calling Agent Setup
 Capstone Project - Natural Language Processing
-Supports Local Ollama LLM (NVIDIA RTX 3050 GPU Accelerated) & Cloud OpenAI
+Powered by Local Ollama (llama3) & Native Tool Calling
 """
 
 import os
-import json
-import urllib.request
+import re
 from typing import Optional, List, Dict, Any
 
-try:
-    from langchain.agents import AgentExecutor, create_react_agent
-except ImportError:
-    from langchain_classic.agents import AgentExecutor, create_react_agent
+from textblob import TextBlob
+import spacy
+from deep_translator import GoogleTranslator
+from bertopic import BERTopic
 
-from langchain_core.tools import Tool
-from langchain_core.prompts import PromptTemplate
-from langchain_community.tools import DuckDuckGoSearchRun
-
-# Local Ollama & Cloud OpenAI Chat Models
+# Local Ollama & LangChain Native Tool Calling
 from langchain_ollama import ChatOllama
-from langchain_openai import ChatOpenAI
+from langchain_core.tools import Tool
+from langchain_core.prompts import ChatPromptTemplate
 
-from nlp_utils import analyze_sentiment, translate_text
+try:
+    from langchain.agents import AgentExecutor, create_tool_calling_agent
+except ImportError:
+    from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
+
+# Lazy load spaCy model
+try:
+    nlp = spacy.load("en_core_web_sm")
+except Exception:
+    import subprocess
+    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+    nlp = spacy.load("en_core_web_sm")
 
 
-def get_available_ollama_models(base_url: str = "http://localhost:11434") -> List[str]:
+def build_agent_tools(vectorstore):
     """
-    Queries the local Ollama server to list currently installed models.
+    Constructs the tool catalog for the Native Tool Calling Agent:
+    1. Document_Search: RAG retriever with top-4 chunks (k=4) & fallback.
+    2. Topic_Modeling: BERTopic theme discovery.
+    3. Sentiment_Analysis: TextBlob polarity & subjectivity.
+    4. Info_Extraction: spaCy token-level Named Entity Recognition.
+    5. Translate: deep-translator multilingual engine.
     """
-    try:
-        url = f"{base_url.rstrip('/')}/api/tags"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
-            return models if models else ["llama3.2:latest"]
-    except Exception:
-        return ["llama3.2:latest", "llama3:latest", "mistral:latest", "qwen2.5:3b"]
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
+    def run_doc_search(query: str) -> str:
+        clean_q = query.strip().strip('"').strip("'")
+        docs = retriever.invoke(clean_q)
+        if not docs:
+            return "No directly matching excerpt found in the document."
+        return "\n\n".join([f"[Excerpt {i+1}]: {d.page_content}" for i, d in enumerate(docs)])
 
-def build_document_retriever_tool(vectorstore) -> Tool:
-    """
-    Creates a retrieval tool for the indexed PDF document.
-    """
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-
-    def run_retrieval(query: str) -> str:
+    def run_topic_modeling(text: str) -> str:
         try:
-            docs = retriever.invoke(query)
-            if not docs:
-                return "No directly matching content found in the uploaded document."
-            
-            formatted_results = []
-            for i, doc in enumerate(docs, 1):
-                clean_snippet = doc.page_content.replace("\n", " ").strip()
-                formatted_results.append(f"[Excerpt {i}]: {clean_snippet}")
-            return "\n\n".join(formatted_results)
-        except Exception as e:
-            return f"Error querying local document vectorstore: {str(e)}"
+            clean_text = text.strip()
+            sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+|\n+', clean_text) if len(s.strip()) > 15]
+            if len(sentences) < 3:
+                sample_docs = retriever.invoke("main research topics, methodology, and conclusion")
+                if sample_docs:
+                    clean_text = " ".join([d.page_content for d in sample_docs])
+                    sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+|\n+', clean_text) if len(s.strip()) > 15]
 
-    return Tool(
-        name="Document_Search",
-        func=run_retrieval,
-        description=(
-            "Use this tool to search information, facts, definitions, and data "
-            "inside the user's uploaded research paper or PDF document. "
-            "Input should be a concise semantic search query."
-        )
-    )
+            if len(sentences) < 3:
+                return "The provided text is too brief for statistical topic clustering (requires at least 3 sentences)."
 
-
-def build_sentiment_tool() -> Tool:
-    """
-    Creates a Sentiment Analysis tool using TextBlob.
-    """
-    def run_sentiment(text: str) -> str:
-        res = analyze_sentiment(text)
-        return (
-            f"Sentiment: {res['sentiment']} | "
-            f"Polarity Score: {res['polarity']} (-1.0 to +1.0) | "
-            f"Subjectivity Score: {res['subjectivity']} (0.0 to 1.0)"
-        )
-
-    return Tool(
-        name="Sentiment_Analysis",
-        func=run_sentiment,
-        description=(
-            "Analyzes the emotional tone, polarity, and subjectivity of any given statement or passage. "
-            "Input should be the raw text snippet to analyze."
-        )
-    )
-
-
-def build_translation_tool() -> Tool:
-    """
-    Creates a Multilingual Translation tool using deep-translator.
-    Format: 'target_lang:text' or simply 'text' (defaulting to English).
-    """
-    def run_translation(query: str) -> str:
-        target_lang = "en"
-        text_to_translate = query
-
-        # Parse custom target language syntax if provided, e.g. "es:Hello world" or "fr|Hello"
-        if ":" in query and len(query.split(":", 1)[0].strip()) <= 5:
-            target_lang, text_to_translate = query.split(":", 1)
-            target_lang = target_lang.strip().lower()
-        elif "|" in query and len(query.split("|", 1)[0].strip()) <= 5:
-            target_lang, text_to_translate = query.split("|", 1)
-            target_lang = target_lang.strip().lower()
-
-        translated = translate_text(text_to_translate.strip(), target_lang=target_lang)
-        return f"[Target: {target_lang}] Translated Text: {translated}"
-
-    return Tool(
-        name="Translation",
-        func=run_translation,
-        description=(
-            "Translates text across languages. By default translates to English ('en'). "
-            "To specify a target language, prefix input with language code and colon, "
-            "e.g., 'es:This is a research summary' for Spanish or 'hi:Hello' for Hindi."
-        )
-    )
-
-
-def get_react_prompt() -> PromptTemplate:
-    """
-    Prompt Engineering: Returns a robust, calibrated ReAct prompt template designed
-    to work seamlessly across both local open-weights LLMs (like LLaMA 3.2 on RTX 3050)
-    and cloud LLMs.
-    """
-    template = """Answer the following questions as best you can. You have access to the following tools:
-
-{tools}
-
-Use the following format strictly:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-IMPORTANT RULES:
-1. When you receive an Observation that answers the Question, do NOT invoke any more tools. You MUST write 'Thought: I now know the final answer' followed by 'Final Answer: ...'.
-2. Never hallucinate or invent tool names outside of [{tool_names}].
-3. For general greetings or simple questions, you can respond directly with 'Thought: I now know the final answer' and provide 'Final Answer: ...'.
-
-Begin!
-
-Question: {input}
-Thought:{agent_scratchpad}"""
-
-    return PromptTemplate.from_template(template)
-
-
-def create_agent(
-    vectorstore,
-    model_provider: str = "ollama",
-    model_name: str = "llama3.2",
-    ollama_base_url: str = "http://localhost:11434",
-    openai_api_key: Optional[str] = None
-) -> AgentExecutor:
-    """
-    Initializes and returns a LangChain ReAct AgentExecutor equipped with:
-    1. Document_Search (RAG retriever from Chroma)
-    2. Web_Search (DuckDuckGo search for live external knowledge)
-    3. Sentiment_Analysis (TextBlob tone and subjectivity)
-    4. Translation (deep-translator multilingual capabilities)
-
-    Args:
-        vectorstore: Chroma vector store instance populated with PDF embeddings.
-        model_provider: 'ollama' (Local RTX 3050 GPU accelerated) or 'openai' (Cloud).
-        model_name: Model identifier (e.g. 'llama3.2', 'llama3:latest', 'gpt-3.5-turbo').
-        ollama_base_url: Local Ollama service endpoint (default: http://localhost:11434).
-        openai_api_key: OpenAI API key (required only if model_provider='openai').
-
-    Returns:
-        AgentExecutor: Ready-to-invoke ReAct agent instance.
-    """
-    # 1. Initialize Generative AI Model
-    if model_provider.lower() == "ollama":
-        # Local Ollama with GPU acceleration (RTX 3050 6GB)
-        llm = ChatOllama(
-            model=model_name,
-            base_url=ollama_base_url,
-            temperature=0.0
-        )
-    else:
-        # Cloud OpenAI fallback
-        api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "OpenAI API Key is missing. Please set the OPENAI_API_KEY environment variable "
-                "or switch to 'Local Ollama' mode in the application sidebar."
+            topic_model = BERTopic(
+                embedding_model="all-MiniLM-L6-v2",
+                min_topic_size=2,
+                verbose=False
             )
-        llm = ChatOpenAI(
-            model=model_name or "gpt-3.5-turbo",
-            temperature=0.0,
-            api_key=api_key
-        )
+            topics, _ = topic_model.fit_transform(sentences)
+            topic_info = topic_model.get_topic_info()
 
-    # 2. Assemble Multimodal Tools
-    document_search_tool = build_document_retriever_tool(vectorstore)
-    web_search_tool = Tool(
-        name="Web_Search",
-        func=DuckDuckGoSearchRun().run,
-        description=(
-            "Useful when you need current information from the internet, academic citations, "
-            "recent developments, or facts not present in the uploaded research document."
-        )
-    )
-    sentiment_tool = build_sentiment_tool()
-    translation_tool = build_translation_tool()
+            top_topics = []
+            for _, row in topic_info.head(5).iterrows():
+                name = row.get("Name", f"Topic {row['Topic']}")
+                top_topics.append(f"• {name}")
 
-    tools = [
-        document_search_tool,
-        web_search_tool,
-        sentiment_tool,
-        translation_tool
+            return "Top Discovered Themes / Topics:\n" + "\n".join(top_topics) if top_topics else "No distinct topics found."
+        except Exception as e:
+            return f"Topic modeling error: {str(e)}"
+
+    def run_sentiment(text: str) -> str:
+        blob = TextBlob(text)
+        pol = round(blob.sentiment.polarity, 4)
+        subj = round(blob.sentiment.subjectivity, 4)
+        label = "Positive" if pol > 0.1 else ("Negative" if pol < -0.1 else "Neutral")
+        return f"Sentiment: {label} (Polarity Score: {pol}, Subjectivity Score: {subj})"
+
+    def run_info_extraction(text: str) -> str:
+        doc = nlp(text)
+        ents = [f"{e.text} [{e.label_}]" for e in doc.ents]
+        return "; ".join(ents) if ents else "No named entities recognized in text."
+
+    def run_translation(query: str) -> str:
+        clean_q = query.strip().strip('"').strip("'")
+        translator = GoogleTranslator(source="auto", target="en")
+        return translator.translate(clean_q)
+
+    return [
+        Tool(
+            name="Document_Search",
+            func=run_doc_search,
+            description="Use this tool to find specific facts, methodologies, definitions, or experimental data. Do NOT use this to count topics or summarize themes."
+        ),
+        Tool(
+            name="Topic_Modeling",
+            func=run_topic_modeling,
+            description="Use this tool ONLY when the user asks about the main themes, topics, or clusters inside the document. Input must be a large chunk of text."
+        ),
+        Tool(
+            name="Sentiment_Analysis",
+            func=run_sentiment,
+            description="Use this tool to analyze the emotional polarity (-1 to +1) and subjective tone of any scientific passage or claim."
+        ),
+        Tool(
+            name="Info_Extraction",
+            func=run_info_extraction,
+            description="Use this tool to extract key Named Entities (Persons, Organizations, Universities, Dates) from text."
+        ),
+        Tool(
+            name="Translate",
+            func=run_translation,
+            description="Use this tool to translate non-English queries or excerpts into English."
+        )
     ]
 
-    # 3. ReAct Prompt Engineering
-    prompt = get_react_prompt()
 
-    # 4. Construct ReAct Agent
-    agent = create_react_agent(llm=llm, tools=tools, prompt=prompt)
+def create_agent(vectorstore) -> AgentExecutor:
+    """
+    Creates and returns a Native Tool Calling AgentExecutor powered by local Ollama (llama3).
+    Includes safety limits: max_iterations=4, max_execution_time=60, early_stopping_method='generate'.
+    """
+    llm = ChatOllama(
+        model="llama3",
+        temperature=0.0
+    )
 
-    # 5. Return Executor
-    agent_executor = AgentExecutor(
+    tools = build_agent_tools(vectorstore)
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "You are an expert AI Research Assistant specializing in Natural Language Processing.\n"
+            "You have access to specialized tools to answer inquiries accurately:\n"
+            "- Use 'Document_Search' to retrieve specific factual information, methodology, or metrics.\n"
+            "- Use 'Topic_Modeling' when the user asks about main themes, topics, or clusters in the paper.\n"
+            "- Use 'Sentiment_Analysis' to evaluate emotional polarity and subjectivity.\n"
+            "- Use 'Info_Extraction' to extract named entities (authors, universities, dates).\n"
+            "- Use 'Translate' to translate non-English inputs into English.\n"
+            "Always invoke the appropriate tool before responding."
+        ),
+        ("human", "{input}"),
+        ("placeholder", "{agent_scratchpad}")
+    ])
+
+    agent = create_tool_calling_agent(llm=llm, tools=tools, prompt=prompt)
+
+    return AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,
-        handle_parsing_errors=True,
-        max_iterations=6
+        max_iterations=4,
+        max_execution_time=60,
+        early_stopping_method="generate",
+        handle_parsing_errors="Format error! You must use the provided tools correctly.",
+        return_intermediate_steps=True
     )
-
-    return agent_executor
